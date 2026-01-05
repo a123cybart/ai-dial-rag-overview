@@ -1,13 +1,11 @@
 import os
-from langchain_community.document_loaders import TextLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import FAISS
-from langchain_core.messages import SystemMessage, HumanMessage
-from langchain_core.vectorstores import VectorStore
-from langchain_openai import AzureOpenAIEmbeddings, AzureChatOpenAI
-from pydantic import SecretStr
-from task._constants import DIAL_URL, API_KEY
 
+from langchain_community.document_loaders import TextLoader
+from langchain_community.vectorstores import FAISS
+from langchain_core.vectorstores import VectorStore
+from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from pydantic import SecretStr
 
 SYSTEM_PROMPT = """You are a RAG-powered assistant that assists users with their questions about microwave usage.
             
@@ -31,7 +29,6 @@ USER_PROMPT = """##RAG CONTEXT:
 
 
 class MicrowaveRAG:
-
     def __init__(self, embeddings: AzureOpenAIEmbeddings, llm_client: AzureChatOpenAI):
         self.llm_client = llm_client
         self.embeddings = embeddings
@@ -42,6 +39,14 @@ class MicrowaveRAG:
         print("🔄 Initializing Microwave Manual RAG System...")
         # TODO:
         #  Check if `microwave_faiss_index` folder exists
+        if os.path.exists("microwave_faiss_index"):
+            return FAISS.load_local(
+                folder_path="microwave_faiss_index",
+                embeddings=self.embeddings,
+                allow_dangerous_deserialization=True,
+            )
+        else:
+            return self._create_new_index()
         #  - Exists:
         #       It means that we have already converted data into vectors (embeddings), saved them in FAISS vector
         #       store and saved it locally to reuse it later.
@@ -52,24 +57,32 @@ class MicrowaveRAG:
         #  - Otherwise:
         #       - Create new index
         #  Return create vectorstore
-        return None
 
     def _create_new_index(self) -> VectorStore:
         print("📖 Loading text document...")
         # TODO:
         #  1. Create Text loader:
+        #       - Use `TextLoader` from `langchain_community.document_loaders`
+        text_loader = TextLoader(file_path="microwave_manual.txt", encoding="utf-8")
+        documents = text_loader.load()
         #       - file_path is `microwave_manual.txt`
         #       - encoding is `utf-8`
         #  2. Load documents with loader
         #  3. Create RecursiveCharacterTextSplitter with
-        #       - chunk_size=300
-        #       - chunk_overlap=50
-        #       - separators=["\n\n", "\n", "."]
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=300, chunk_overlap=50, separators=["\n\n", "\n", "."]
+        )
+        chunks = text_splitter.split_documents(documents)
         #  4. Split documents into `chunks`
         #  5. Create vectorstore from documents
+        vectorstore = FAISS.from_documents(
+            documents=chunks,
+            embedding=self.embeddings,
+        )
         #  6. Save indexed data locally with index name "microwave_faiss_index"
+        vectorstore.save_local(folder_path="microwave_faiss_index")
         #  7. Return created vectorstore
-        return None
+        return vectorstore
 
     def retrieve_context(self, query: str, k: int = 4, score=0.3) -> str:
         """
@@ -81,10 +94,16 @@ class MicrowaveRAG:
         """
         print(f"{'=' * 100}\n🔍 STEP 1: RETRIEVAL\n{'-' * 100}")
         print(f"Query: '{query}'")
-        print(f"Searching for top {k} most relevant chunks with similarity score {score}:")
+        print(
+            f"Searching for top {k} most relevant chunks with similarity score {score}:"
+        )
 
         # TODO:
         #  Make similarity search with relevance scores`:
+        results = self.vectorstore.similarity_search_with_score(
+            query=query,
+            k=k,
+        )
         #       - query=query
         #       - k=k
         #       - score_threshold=score
@@ -92,17 +111,24 @@ class MicrowaveRAG:
         context_parts = []
         # TODO:
         #  Iterate through results and:
+        for i, (page, result_score) in enumerate(results):
+            context_parts.append(page.page_content)
+            print(f"\nResult {i + 1} (score: {result_score}):")
+            print(page.page_content)
         #       - add page content to the context_parts array
         #       - print result score
         #       - print page content
 
         print("=" * 100)
-        return "\n\n".join(context_parts) # will join all chunks ion one string with `\n\n` separator between chunks
+        return "\n\n".join(
+            context_parts
+        )  # will join all chunks ion one string with `\n\n` separator between chunks
 
     def augment_prompt(self, query: str, context: str) -> str:
         print(f"\n🔗 STEP 2: AUGMENTATION\n{'-' * 100}")
 
-        augmented_prompt = None #TODO: Format USER_PROMPT with context and query
+        # augmented_prompt = None  # TODO: Format USER_PROMPT with context and query
+        augmented_prompt = USER_PROMPT.format(context=context, query=query)
 
         print(f"{augmented_prompt}\n{'=' * 100}")
         return augmented_prompt
@@ -111,13 +137,21 @@ class MicrowaveRAG:
         print(f"\n🤖 STEP 3: GENERATION\n{'-' * 100}")
 
         # TODO:
+        messages = [
+            ("system", SYSTEM_PROMPT),
+            ("user", augmented_prompt),
+        ]
+        response = self.llm_client.invoke(input=messages)
         #  1. Create messages array with such messages:
+
         #       - System message from SYSTEM_PROMPT
         #       - Human message from augmented_prompt
         #  2. Invoke llm client with messages
         #  3. print response content
+
         #  4. Return response content
-        return None
+        print(f"Response:\n{response.content}\n{'=' * 100}")
+        return response.content
 
 
 def main(rag: MicrowaveRAG):
@@ -125,17 +159,33 @@ def main(rag: MicrowaveRAG):
 
     while True:
         user_question = input("\n> ").strip()
-        #TODO:
+        # TODO:
         # Step 1: make Retrieval of context
+        context = rag.retrieve_context(query=user_question, k=4, score=0.3)
+        # Step 1: Retrieval
+
+        augmented_prompt = rag.augment_prompt(query=user_question, context=context)
         # Step 2: Augmentation
         # Step 3: Generation
-
+        rag.generate_answer(augmented_prompt=augmented_prompt)
 
 
 main(
     MicrowaveRAG(
         # TODO:
         #  1. pass embeddings:
+        AzureOpenAIEmbeddings(
+            model="text-embedding-3-small-1",
+            azure_endpoint=os.getenv("DIAL_URL"),
+            api_key=SecretStr(os.getenv("API_KEY")),
+        ),
+        AzureChatOpenAI(
+            temperature=0.0,
+            azure_deployment="gpt-4o",
+            azure_endpoint=os.getenv("DIAL_URL"),
+            api_key=SecretStr(os.getenv("API_KEY")),
+            api_version="",
+        ),
         #       - AzureOpenAIEmbeddings
         #       - deployment is the text-embedding-3-small-1 model
         #       - azure_endpoint is the DIAL_URL
